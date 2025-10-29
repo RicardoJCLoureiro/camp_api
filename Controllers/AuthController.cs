@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -102,6 +101,9 @@ namespace SPARC_API.Controllers
             };
         }
 
+        // ─────────────────────────────────────────────────────────────────────────────
+        // 1) LOGIN (no JWT cookie until MFA is cleared)
+        // ─────────────────────────────────────────────────────────────────────────────
         [HttpPost("login")]
         [EnableRateLimiting("LoginPolicy")]
         public async Task<IActionResult> Login([FromBody] LoginDto dto)
@@ -127,6 +129,7 @@ namespace SPARC_API.Controllers
                     FROM dbo.USERS
                     WHERE EMAIL = @Email AND IS_ACTIVE = 1;", new { dto.Email });
 
+                // Frontend sends hashed password already: compare hash-to-hash
                 if (user == null || user.PasswordHash != dto.Password)
                 {
                     statusCode = 401;
@@ -134,6 +137,22 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid credentials." });
                 }
 
+                bool isMfaEnabled = (bool)user.IsMfaEnabled;
+                bool hasSecret = !string.IsNullOrEmpty((string)user.MFASecret);
+
+                // NOTE: Do NOT issue JWT yet — return MFA gating states first.
+                if (isMfaEnabled && !hasSecret)
+                {
+                    resLog = JsonSerializer.Serialize(new { mfaSetupRequired = true });
+                    return Ok(new { mfaSetupRequired = true });
+                }
+                if (isMfaEnabled && hasSecret)
+                {
+                    resLog = JsonSerializer.Serialize(new { mfaRequired = true });
+                    return Ok(new { mfaRequired = true });
+                }
+
+                // Non-MFA flow: now it is safe to mint JWT
                 var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
                 var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
                 var expires = DateTime.UtcNow.AddMinutes(_jwt.ExpireMinutes);
@@ -147,21 +166,6 @@ namespace SPARC_API.Controllers
                 var jwtToken = new JwtSecurityTokenHandler().WriteToken(jwt);
                 AppendJwtCookie(jwtToken, expires);
 
-                bool isMfaEnabled = (bool)user.IsMfaEnabled;
-                bool hasSecret = !string.IsNullOrEmpty((string)user.MFASecret);
-
-                if (isMfaEnabled && !hasSecret)
-                {
-                    resLog = JsonSerializer.Serialize(new { mfaSetupRequired = true });
-                    return Ok(new { mfaSetupRequired = true });
-                }
-                if (isMfaEnabled && hasSecret)
-                {
-                    resLog = JsonSerializer.Serialize(new { mfaRequired = true });
-                    return Ok(new { mfaRequired = true });
-                }
-
-                // Non-MFA flow: return user (with roles) + expiry
                 var session = await BuildUserSessionAsync((int)user.UserID);
                 if (session.Roles is null || !session.Roles.Any())
                 {
@@ -187,6 +191,9 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // ─────────────────────────────────────────────────────────────────────────────
+        // 2) LOGIN WITH MFA (JWT cookie only AFTER verifying TOTP)
+        // ─────────────────────────────────────────────────────────────────────────────
         [HttpPost("mfa/login")]
         [EnableRateLimiting("LoginPolicy")]
         public async Task<IActionResult> LoginWithMfa([FromBody] LoginWithMfaDto dto)
@@ -225,6 +232,7 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid MFA code." });
                 }
 
+                // MFA passed → now it is safe to mint JWT
                 var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
                 var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
                 var expires = DateTime.UtcNow.AddMinutes(_jwt.ExpireMinutes);
@@ -256,6 +264,9 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // ─────────────────────────────────────────────────────────────────────────────
+        // 3) MFA Setup (QR) & Verify (enable flag) — kept as-is for parity
+        // ─────────────────────────────────────────────────────────────────────────────
         [Authorize]
         [HttpPost("mfa/setup")]
         public async Task<IActionResult> SetupMfa()
@@ -347,6 +358,9 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // ─────────────────────────────────────────────────────────────────────────────
+        // 4) Refresh / Refresh-Contexts / Logout — unchanged
+        // ─────────────────────────────────────────────────────────────────────────────
         [Authorize]
         [HttpPost("refresh")]
         public async Task<IActionResult> Refresh()
@@ -389,7 +403,6 @@ namespace SPARC_API.Controllers
 
                 AppendJwtCookie(token, expires);
 
-                // (Optional) Also return the current user session so the client can refresh picture/roles if needed
                 var session = await BuildUserSessionAsync(userId);
 
                 resLog = JsonSerializer.Serialize(new { expires });
@@ -490,6 +503,9 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // ─────────────────────────────────────────────────────────────────────────────
+        // 5) Forgot/Reset password — unchanged (hash-through)
+        // ─────────────────────────────────────────────────────────────────────────────
         [HttpPost("forgotpassword")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto dto)
         {
