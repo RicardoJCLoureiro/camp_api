@@ -1,13 +1,12 @@
-﻿// Controllers/AlertsController.cs
-using Dapper;
+﻿using Dapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using SPARC_API.Helpers;
 using System.Data;
 using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text.Json;
-using SPARC_API.Helpers;
 
 namespace SPARC_API.Controllers
 {
@@ -17,14 +16,19 @@ namespace SPARC_API.Controllers
     public class AlertsController : ControllerBase
     {
         private readonly IDbConnection _db;
-        public AlertsController(IDbConnection db) => _db = db;
+
+        public AlertsController(IDbConnection db)
+        {
+            _db = db;
+        }
 
         // ───────────────────────────────── DTOs ─────────────────────────────────
         public class AlertListItemDto
         {
             public int Id { get; set; }
             public string Title { get; set; } = "";
-            public string CreatedAt { get; set; } = "";    // ISO 8601 (UTC) for FE
+            public string Body { get; set; } = "";
+            public string CreatedAt { get; set; } = "";    // ISO 8601 UTC
             public string Severity { get; set; } = "info"; // 'info' | 'warning' | 'critical'
             public bool IsRead { get; set; }
         }
@@ -48,6 +52,13 @@ namespace SPARC_API.Controllers
             public int[] Ids { get; set; } = Array.Empty<int>();
         }
 
+        public class CreateAlertDto
+        {
+            public string Title { get; set; } = "";
+            public string Body { get; set; } = "";
+            public string Severity { get; set; } = "info";
+        }
+
         // ─────────────────────────────── helpers ────────────────────────────────
         private bool TryGetUserId(out int userId)
         {
@@ -56,20 +67,17 @@ namespace SPARC_API.Controllers
             return int.TryParse(sub, out userId);
         }
 
-        private static AlertListItemDto MapRowToItem(dynamic r) => new AlertListItemDto
+        private static AlertListItemDto MapRow(dynamic r) => new AlertListItemDto
         {
             Id = (int)r.Id,
             Title = (string)r.Title,
+            Body = (string)(r.Body ?? ""),
             CreatedAt = ((DateTime)r.CreatedAtUtc).ToUniversalTime().ToString("o"),
             Severity = string.IsNullOrEmpty((string?)r.SeverityCode) ? "info" : ((string)r.SeverityCode),
             IsRead = (bool)r.IsRead
         };
 
         // ───────────────────────────── summary (bell) ───────────────────────────
-        /// <summary>
-        /// GET /api/alerts/summary?max=6
-        /// Returns unread count and last N alerts for the authenticated user.
-        /// </summary>
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary([FromQuery] int? max = null)
         {
@@ -91,39 +99,35 @@ namespace SPARC_API.Controllers
                 var sql = @"
 SELECT COUNT(1) AS UnreadCount
 FROM dbo.USER_ALERTS
-WHERE USER_ID = @UserId AND READ_AT IS NULL;
+WHERE USER_ID = @UserId AND READ_AT IS NULL AND ARCHIVED_AT IS NULL 
+  AND (EXPIRES_AT IS NULL OR EXPIRES_AT > SYSUTCDATETIME());
 
 SELECT TOP (@Take)
        ua.ALERT_ID    AS Id,
        ua.TITLE       AS Title,
+       ua.BODY        AS Body,
        ua.CREATED_AT  AS CreatedAtUtc,
        CASE WHEN ua.READ_AT IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS IsRead,
        s.CODE         AS SeverityCode
 FROM dbo.USER_ALERTS ua
 LEFT JOIN dbo.ALERT_SEVERITY s ON s.SEVERITY_ID = ua.SEVERITY_ID
 WHERE ua.USER_ID = @UserId
+  AND ua.ARCHIVED_AT IS NULL
+  AND (ua.EXPIRES_AT IS NULL OR ua.EXPIRES_AT > SYSUTCDATETIME())
 ORDER BY ua.CREATED_AT DESC;";
 
                 using var multi = await _db.QueryMultipleAsync(sql, new { UserId = userId, Take = take });
-
                 int unreadCount = await multi.ReadFirstAsync<int>();
                 var rows = (await multi.ReadAsync()).ToList();
+                var items = rows.Select(MapRow).ToList();
 
-                var items = rows.Select(MapRowToItem).ToList();
-
-                var payload = new AlertsSummaryDto
-                {
-                    UnreadCount = unreadCount,
-                    Items = items
-                };
-
+                var payload = new AlertsSummaryDto { UnreadCount = unreadCount, Items = items };
                 resLog = JsonSerializer.Serialize(new { unreadCount = payload.UnreadCount, items = items.Count });
                 return Ok(payload);
             }
             catch (Exception ex)
             {
-                statusCode = 500;
-                errorInfo = ex.ToString();
+                statusCode = 500; errorInfo = ex.ToString();
                 resLog = JsonSerializer.Serialize(new { error = "Internal server error." });
                 return StatusCode(500, new { error = "Internal server error." });
             }
@@ -136,9 +140,6 @@ ORDER BY ua.CREATED_AT DESC;";
         }
 
         // ─────────────────────────────── paged list ─────────────────────────────
-        /// <summary>
-        /// GET /api/alerts?page=1&pageSize=20&onlyUnread=false&severity=warning
-        /// </summary>
         [HttpGet]
         public async Task<IActionResult> List(
             [FromQuery] int page = 1,
@@ -163,11 +164,9 @@ ORDER BY ua.CREATED_AT DESC;";
                 int ps = Math.Clamp(pageSize, 1, 100);
                 int offset = (p - 1) * ps;
 
-                // build filters
-                var sbWhere = new System.Text.StringBuilder("ua.USER_ID = @UserId");
+                var sbWhere = new System.Text.StringBuilder("ua.USER_ID = @UserId AND ua.ARCHIVED_AT IS NULL AND (ua.EXPIRES_AT IS NULL OR ua.EXPIRES_AT > SYSUTCDATETIME())");
                 if (onlyUnread) sbWhere.Append(" AND ua.READ_AT IS NULL");
-                if (!string.IsNullOrWhiteSpace(severity))
-                    sbWhere.Append(" AND s.CODE = @Severity");
+                if (!string.IsNullOrWhiteSpace(severity)) sbWhere.Append(" AND s.CODE = @Severity");
 
                 string sql = $@"
 SELECT COUNT(1)
@@ -179,6 +178,7 @@ WITH Paged AS (
   SELECT
     ua.ALERT_ID    AS Id,
     ua.TITLE       AS Title,
+    ua.BODY        AS Body,
     ua.CREATED_AT  AS CreatedAtUtc,
     CASE WHEN ua.READ_AT IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS IsRead,
     s.CODE         AS SeverityCode,
@@ -187,7 +187,7 @@ WITH Paged AS (
   LEFT JOIN dbo.ALERT_SEVERITY s ON s.SEVERITY_ID = ua.SEVERITY_ID
   WHERE {sbWhere}
 )
-SELECT Id, Title, CreatedAtUtc, IsRead, SeverityCode
+SELECT Id, Title, Body, CreatedAtUtc, IsRead, SeverityCode
 FROM Paged
 WHERE rn BETWEEN @Offset + 1 AND @Offset + @PageSize
 ORDER BY rn;";
@@ -202,23 +202,15 @@ ORDER BY rn;";
 
                 int total = await multi.ReadFirstAsync<int>();
                 var rows = (await multi.ReadAsync()).ToList();
-                var items = rows.Select(MapRowToItem).ToList();
+                var items = rows.Select(MapRow).ToList();
 
-                var payload = new AlertsPageDto
-                {
-                    Items = items,
-                    Page = p,
-                    PageSize = ps,
-                    TotalCount = total
-                };
-
+                var payload = new AlertsPageDto { Items = items, Page = p, PageSize = ps, TotalCount = total };
                 resLog = JsonSerializer.Serialize(new { total = payload.TotalCount, count = items.Count });
                 return Ok(payload);
             }
             catch (Exception ex)
             {
-                statusCode = 500;
-                errorInfo = ex.ToString();
+                statusCode = 500; errorInfo = ex.ToString();
                 resLog = JsonSerializer.Serialize(new { error = "Internal server error." });
                 return StatusCode(500, new { error = "Internal server error." });
             }
@@ -230,124 +222,58 @@ ORDER BY rn;";
             }
         }
 
-        // ────────────────────────────── mark as read ────────────────────────────
-        /// <summary>
-        /// POST /api/alerts/mark-read
-        /// { "ids": [1,2,3] }
-        /// Marks alerts as read for the authenticated user.
-        /// </summary>
-        [HttpPost("mark-read")]
-        public async Task<IActionResult> MarkRead([FromBody] MarkReadDto dto)
+        // ────────────────────────────── mark all read ───────────────────────────
+        [HttpPost("mark-all-read")]
+        public async Task<IActionResult> MarkAllRead()
         {
-            var sw = Stopwatch.StartNew();
-            int endpointLogId = await LoggingHelper.LogEndpointCallAsync(
-                _db, "AlertsController.MarkRead", HttpContext.Request.Path);
-            string reqLog = JsonSerializer.Serialize(new { ids = dto?.Ids?.Length ?? 0 });
-            string resLog = "";
-            int statusCode = 200;
-            string? errorInfo = null;
+            if (!TryGetUserId(out var userId))
+                return Unauthorized(new { error = "Invalid token claims." });
 
-            try
-            {
-                if (!TryGetUserId(out var userId))
-                    return Unauthorized(new { error = "Invalid token claims." });
-
-                if (dto?.Ids == null || dto.Ids.Length == 0)
-                    return BadRequest(new { error = "noIds" });
-
-                // Update only rows owned by this user
-                var sql = @"
-UPDATE dbo.USER_ALERTS
-   SET READ_AT = SYSUTCDATETIME()
- WHERE USER_ID = @UserId
-   AND ALERT_ID IN @Ids
-   AND READ_AT IS NULL;";
-
-                int updated = await _db.ExecuteAsync(sql, new { UserId = userId, Ids = dto.Ids });
-
-                resLog = JsonSerializer.Serialize(new { updated });
-                return Ok(new { updated });
-            }
-            catch (Exception ex)
-            {
-                statusCode = 500;
-                errorInfo = ex.ToString();
-                resLog = JsonSerializer.Serialize(new { error = "Internal server error." });
-                return StatusCode(500, new { error = "Internal server error." });
-            }
-            finally
-            {
-                sw.Stop();
-                await LoggingHelper.LogRequestResponseAsync(
-                    _db, endpointLogId, reqLog, resLog, statusCode, errorInfo, (int)sw.ElapsedMilliseconds);
-            }
+            var sql = @"UPDATE dbo.USER_ALERTS SET READ_AT = SYSUTCDATETIME() WHERE USER_ID = @UserId AND READ_AT IS NULL;";
+            int updated = await _db.ExecuteAsync(sql, new { UserId = userId });
+            return Ok(new { updated });
         }
 
-        // Controllers/AlertsController.cs  (append inside class)
-        [HttpGet("{id:int}")]
-        public async Task<IActionResult> GetById([FromRoute] int id)
+        // ───────────────────────────── archive all ──────────────────────────────
+        [HttpPost("archive-all")]
+        public async Task<IActionResult> ArchiveAll()
         {
-            var sw = Stopwatch.StartNew();
-            int endpointLogId = await LoggingHelper.LogEndpointCallAsync(
-                _db, "AlertsController.GetById", HttpContext.Request.Path + Request.QueryString);
-            string reqLog = JsonSerializer.Serialize(new { id });
-            string resLog = "";
-            int statusCode = 200;
-            string? errorInfo = null;
+            if (!TryGetUserId(out var userId))
+                return Unauthorized(new { error = "Invalid token claims." });
 
-            try
-            {
-                if (!TryGetUserId(out var userId))
-                    return Unauthorized(new { error = "Invalid token claims." });
-
-                // NOTE: If you don't have CONTENT/MESSAGE in USER_ALERTS, coalesce to NULL safely.
-                var sql = @"
-SELECT 
-    ua.ALERT_ID         AS Id,
-    ua.TITLE            AS Title,
-    ua.CREATED_AT       AS CreatedAtUtc,
-    CASE WHEN ua.READ_AT IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS IsRead,
-    s.CODE              AS SeverityCode,
-    CAST(NULL AS nvarchar(max)) AS Content   -- replace with ua.CONTENT (or ua.MESSAGE) if you have it
-FROM dbo.USER_ALERTS ua
-LEFT JOIN dbo.ALERT_SEVERITY s ON s.SEVERITY_ID = ua.SEVERITY_ID
-WHERE ua.USER_ID = @UserId AND ua.ALERT_ID = @Id;";
-
-                var row = await _db.QueryFirstOrDefaultAsync(sql, new { UserId = userId, Id = id });
-                if (row == null)
-                {
-                    statusCode = 404;
-                    resLog = JsonSerializer.Serialize(new { error = "notFound" });
-                    return NotFound(new { error = "notFound" });
-                }
-
-                var dto = new
-                {
-                    id = (int)row.Id,
-                    title = (string)row.Title,
-                    createdAt = ((DateTime)row.CreatedAtUtc).ToUniversalTime().ToString("o"),
-                    severity = string.IsNullOrEmpty((string?)row.SeverityCode) ? "info" : ((string)row.SeverityCode),
-                    isRead = (bool)row.IsRead,
-                    content = (string?)row.Content // may be null if you haven't added a content column
-                };
-
-                resLog = JsonSerializer.Serialize(new { ok = true, hasContent = dto.content != null });
-                return Ok(dto);
-            }
-            catch (Exception ex)
-            {
-                statusCode = 500;
-                errorInfo = ex.ToString();
-                resLog = JsonSerializer.Serialize(new { error = "Internal server error." });
-                return StatusCode(500, new { error = "Internal server error." });
-            }
-            finally
-            {
-                sw.Stop();
-                await LoggingHelper.LogRequestResponseAsync(
-                    _db, endpointLogId, reqLog, resLog, statusCode, errorInfo, (int)sw.ElapsedMilliseconds);
-            }
+            var sql = @"UPDATE dbo.USER_ALERTS SET ARCHIVED_AT = SYSUTCDATETIME() WHERE USER_ID = @UserId AND ARCHIVED_AT IS NULL;";
+            int updated = await _db.ExecuteAsync(sql, new { UserId = userId });
+            return Ok(new { updated });
         }
 
+        // ────────────────────────── demo create ─────────────────────
+        [HttpPost("demo-create")]
+        public async Task<IActionResult> CreateDemo([FromBody] CreateAlertDto dto)
+        {
+            if (!TryGetUserId(out var userId))
+                return Unauthorized(new { error = "Invalid token claims." });
+
+            var sql = @"
+DECLARE @SeverityId INT = (SELECT TOP 1 SEVERITY_ID FROM ALERT_SEVERITY WHERE CODE = @Code);
+IF @SeverityId IS NULL SET @SeverityId = (SELECT TOP 1 SEVERITY_ID FROM ALERT_SEVERITY WHERE CODE = 'info');
+
+INSERT INTO dbo.USER_ALERTS (USER_ID, SEVERITY_ID, TITLE, BODY, SOURCE, SOURCE_REF, CREATED_AT)
+VALUES (@UserId, @SeverityId, @Title, @Body, 'demo', NULL, SYSUTCDATETIME());
+
+SELECT TOP 1
+    ALERT_ID AS Id,
+    TITLE AS Title,
+    BODY AS Body,
+    CREATED_AT AS CreatedAtUtc,
+    CAST(0 AS bit) AS IsRead,
+    (SELECT CODE FROM ALERT_SEVERITY WHERE SEVERITY_ID = @SeverityId) AS SeverityCode
+FROM dbo.USER_ALERTS
+WHERE USER_ID = @UserId
+ORDER BY ALERT_ID DESC;";
+
+            var row = await _db.QueryFirstAsync(sql, new { UserId = userId, Title = dto.Title, Body = dto.Body, Code = dto.Severity });
+            var item = MapRow(row);
+            return Ok(item);
+        }
     }
 }

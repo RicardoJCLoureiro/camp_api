@@ -35,6 +35,7 @@ builder.Services.AddTransient<IDbConnection>(_ =>
     new SqlConnection(builder.Configuration.GetConnectionString("DefaultConnection")));
 builder.Services.AddMemoryCache();
 
+
 // ─── 2. Built-in Rate Limiter ─────────────────────────────────────
 builder.Services.AddRateLimiter(options =>
 {
@@ -114,6 +115,7 @@ builder.Services.AddAuthentication(options =>
         ClockSkew = TimeSpan.Zero
     };
 
+    // Allow using HttpOnly cookie "accessToken" for both API and SignalR negotiate
     opts.Events = new JwtBearerEvents
     {
         OnMessageReceived = ctx =>
@@ -200,7 +202,11 @@ app.Use(async (context, next) =>
 // ─── 6. Turn on rate-limiting ────────────────────────────────────
 app.UseRateLimiter();
 
-// ─── 7. Controllers ──────────────────────────────────────────────
+// ─── 7. SignalR hub + Controllers ────────────────────────────────
+
+
+// Controllers
 app.MapControllers();
+
 
 app.Run();

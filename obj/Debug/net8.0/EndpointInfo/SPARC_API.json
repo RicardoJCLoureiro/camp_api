@@ -74,7 +74,31 @@
         }
       }
     },
-    "/api/Alerts/mark-read": {
+    "/api/Alerts/mark-all-read": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/Alerts/archive-all": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/Alerts/demo-create": {
       "post": {
         "tags": [
           "Alerts"
@@ -83,44 +107,21 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MarkReadDto"
+                "$ref": "#/components/schemas/CreateAlertDto"
               }
             },
             "text/json": {
               "schema": {
-                "$ref": "#/components/schemas/MarkReadDto"
+                "$ref": "#/components/schemas/CreateAlertDto"
               }
             },
             "application/*+json": {
               "schema": {
-                "$ref": "#/components/schemas/MarkReadDto"
+                "$ref": "#/components/schemas/CreateAlertDto"
               }
             }
           }
         },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/api/Alerts/{id}": {
-      "get": {
-        "tags": [
-          "Alerts"
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "int32"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -494,6 +495,24 @@
         },
         "additionalProperties": false
       },
+      "CreateAlertDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "body": {
+            "type": "string",
+            "nullable": true
+          },
+          "severity": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "ForgotPasswordDto": {
         "type": "object",
         "properties": {
@@ -535,20 +554,6 @@
           },
           "code": {
             "type": "string",
-            "nullable": true
-          }
-        },
-        "additionalProperties": false
-      },
-      "MarkReadDto": {
-        "type": "object",
-        "properties": {
-          "ids": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32"
-            },
             "nullable": true
           }
         },

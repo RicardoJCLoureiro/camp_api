@@ -32,15 +32,25 @@
   },
   {
     "ContainingType": "SPARC_API.Controllers.AlertsController",
-    "Method": "GetById",
-    "RelativePath": "api/Alerts/{id}",
-    "HttpMethod": "GET",
+    "Method": "ArchiveAll",
+    "RelativePath": "api/Alerts/archive-all",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "SPARC_API.Controllers.AlertsController",
+    "Method": "CreateDemo",
+    "RelativePath": "api/Alerts/demo-create",
+    "HttpMethod": "POST",
     "IsController": true,
     "Order": 0,
     "Parameters": [
       {
-        "Name": "id",
-        "Type": "System.Int32",
+        "Name": "dto",
+        "Type": "SPARC_API.Controllers.AlertsController\u002BCreateAlertDto",
         "IsRequired": true
       }
     ],
@@ -48,18 +58,12 @@
   },
   {
     "ContainingType": "SPARC_API.Controllers.AlertsController",
-    "Method": "MarkRead",
-    "RelativePath": "api/Alerts/mark-read",
+    "Method": "MarkAllRead",
+    "RelativePath": "api/Alerts/mark-all-read",
     "HttpMethod": "POST",
     "IsController": true,
     "Order": 0,
-    "Parameters": [
-      {
-        "Name": "dto",
-        "Type": "SPARC_API.Controllers.AlertsController\u002BMarkReadDto",
-        "IsRequired": true
-      }
-    ],
+    "Parameters": [],
     "ReturnTypes": []
   },
   {
