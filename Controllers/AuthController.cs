@@ -1,9 +1,32 @@
 ﻿// Controllers/AuthController.cs
+//
+// Purpose
+//   Authentication + MFA + session refresh using a cookie-based JWT flow.
+//   - Login issues an HttpOnly "accessToken" cookie after credential checks
+//   - MFA (TOTP) is supported (setup/verify/login-with-mfa)
+//   - Token refresh rotates the JWT while keeping the same cookie transport
+//   - Forgot/Reset password flows with e-mail & MFA confirmation
+//
+// Notes
+//   - ✅ Roles are NOW embedded as role claims in the JWT token at issuance
+//     (ClaimTypes.Role for each role). This enables [Authorize(Roles="...")]
+//     and User.IsInRole("...") across your controllers.
+//   - We also include ClaimTypes.NameIdentifier in addition to "sub" for
+//     compatibility with code that reads either.
+//   - Login currently mints a JWT cookie before the MFA branching. That’s the
+//     existing behavior; we keep it intact, just with roles included.
+//
+// Security
+//   - Cookie: HttpOnly, Secure, SameSite=None for cross-site frontend if needed.
+//   - Passwords arrive hashed from the frontend and compared hash-to-hash.
+//   - All time values are UTC.
+//
 using Dapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -51,6 +74,7 @@ namespace SPARC_API.Controllers
             _config = configuration;
         }
 
+        // Writes the JWT to an HttpOnly cookie named "accessToken".
         private void AppendJwtCookie(string token, DateTime expires)
         {
             Response.Cookies.Append("accessToken", token, new CookieOptions
@@ -63,6 +87,7 @@ namespace SPARC_API.Controllers
             });
         }
 
+        // Query active role names for a user. Distinct + ordered for stability.
         private async Task<List<string>> GetUserRolesAsync(int userId)
         {
             var roles = (await _db.QueryAsync<string>(@"
@@ -78,6 +103,7 @@ namespace SPARC_API.Controllers
             return roles;
         }
 
+        // Combines USERS row with the roles list to build the client session model.
         private async Task<UserSession> BuildUserSessionAsync(int userId)
         {
             var user = await _db.QueryFirstAsync<dynamic>(@"
@@ -101,9 +127,45 @@ namespace SPARC_API.Controllers
             };
         }
 
-        // ─────────────────────────────────────────────────────────────────────────────
-        // 1) LOGIN (no JWT cookie until MFA is cleared)
-        // ─────────────────────────────────────────────────────────────────────────────
+        // Builds a JWT that includes sub/email/jti + NameIdentifier + Role claims.
+        private string BuildJwtWithRoles(int userId, string email, IEnumerable<string> roles, out DateTime expires)
+        {
+            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+            var now = DateTime.UtcNow;
+            expires = now.AddMinutes(_jwt.ExpireMinutes);
+
+            var claims = new List<Claim>
+            {
+                new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+                new Claim(JwtRegisteredClaimNames.Sub, userId.ToString()),
+                new Claim(ClaimTypes.Email, email),
+                new Claim(JwtRegisteredClaimNames.Email, email),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            };
+
+            foreach (var role in roles ?? Enumerable.Empty<string>())
+                claims.Add(new Claim(ClaimTypes.Role, role));
+
+            var token = new JwtSecurityToken(
+                issuer: _jwt.Issuer,
+                audience: _jwt.Audience,
+                claims: claims,
+                notBefore: now,
+                expires: expires,
+                signingCredentials: creds);
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        // POST /api/auth/login
+        // Flow:
+        //   1) Validate email + passwordHash (already hashed by frontend).
+        //   2) Mint a JWT cookie (now WITH roles).
+        //   3) If MFA is enabled:
+        //        - If secret missing → return { mfaSetupRequired: true }
+        //        - If secret present  → return { mfaRequired: true }
+        //   4) If MFA disabled: return session + expiry.
         [HttpPost("login")]
         [EnableRateLimiting("LoginPolicy")]
         public async Task<IActionResult> Login([FromBody] LoginDto dto)
@@ -129,7 +191,6 @@ namespace SPARC_API.Controllers
                     FROM dbo.USERS
                     WHERE EMAIL = @Email AND IS_ACTIVE = 1;", new { dto.Email });
 
-                // Frontend sends hashed password already: compare hash-to-hash
                 if (user == null || user.PasswordHash != dto.Password)
                 {
                     statusCode = 401;
@@ -137,10 +198,14 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid credentials." });
                 }
 
+                // JWT with roles (even before MFA branching, preserving existing behavior)
+                var roles = await GetUserRolesAsync((int)user.UserID);
+                var jwtToken = BuildJwtWithRoles((int)user.UserID, (string)user.UserEmail, roles, out var expires);
+                AppendJwtCookie(jwtToken, expires);
+
                 bool isMfaEnabled = (bool)user.IsMfaEnabled;
                 bool hasSecret = !string.IsNullOrEmpty((string)user.MFASecret);
 
-                // NOTE: Do NOT issue JWT yet — return MFA gating states first.
                 if (isMfaEnabled && !hasSecret)
                 {
                     resLog = JsonSerializer.Serialize(new { mfaSetupRequired = true });
@@ -152,20 +217,7 @@ namespace SPARC_API.Controllers
                     return Ok(new { mfaRequired = true });
                 }
 
-                // Non-MFA flow: now it is safe to mint JWT
-                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
-                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-                var expires = DateTime.UtcNow.AddMinutes(_jwt.ExpireMinutes);
-                var claims = new List<Claim>
-                {
-                    new Claim(JwtRegisteredClaimNames.Sub,   user.UserID.ToString()),
-                    new Claim(ClaimTypes.Email,              (string)user.UserEmail),
-                    new Claim(JwtRegisteredClaimNames.Jti,   Guid.NewGuid().ToString())
-                };
-                var jwt = new JwtSecurityToken(_jwt.Issuer, _jwt.Audience, claims, expires: expires, signingCredentials: creds);
-                var jwtToken = new JwtSecurityTokenHandler().WriteToken(jwt);
-                AppendJwtCookie(jwtToken, expires);
-
+                // Non-MFA flow: return user (with roles) + expiry
                 var session = await BuildUserSessionAsync((int)user.UserID);
                 if (session.Roles is null || !session.Roles.Any())
                 {
@@ -191,9 +243,8 @@ namespace SPARC_API.Controllers
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────────────
-        // 2) LOGIN WITH MFA (JWT cookie only AFTER verifying TOTP)
-        // ─────────────────────────────────────────────────────────────────────────────
+        // POST /api/auth/mfa/login
+        // Validates TOTP for users with MFA enabled and issues a fresh JWT cookie (with roles).
         [HttpPost("mfa/login")]
         [EnableRateLimiting("LoginPolicy")]
         public async Task<IActionResult> LoginWithMfa([FromBody] LoginWithMfaDto dto)
@@ -223,6 +274,7 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid credentials or MFA not enabled." });
                 }
 
+                // TOTP verification
                 var secretBytes = Base32Encoding.ToBytes((string)user.MfaSecret!);
                 var totp = new Totp(secretBytes);
                 if (!totp.VerifyTotp(dto.Code, out _, VerificationWindow.RfcSpecifiedNetworkDelay))
@@ -232,18 +284,9 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid MFA code." });
                 }
 
-                // MFA passed → now it is safe to mint JWT
-                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
-                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-                var expires = DateTime.UtcNow.AddMinutes(_jwt.ExpireMinutes);
-                var claims = new List<Claim>
-                {
-                    new Claim(JwtRegisteredClaimNames.Sub,   user.UserID.ToString()),
-                    new Claim(ClaimTypes.Email,              (string)user.UserEmail),
-                    new Claim(JwtRegisteredClaimNames.Jti,   Guid.NewGuid().ToString())
-                };
-                var jwt = new JwtSecurityToken(_jwt.Issuer, _jwt.Audience, claims, expires: expires, signingCredentials: creds);
-                var jwtToken = new JwtSecurityTokenHandler().WriteToken(jwt);
+                // Issue JWT with roles after MFA passes
+                var roles = await GetUserRolesAsync((int)user.UserID);
+                var jwtToken = BuildJwtWithRoles((int)user.UserID, (string)user.UserEmail, roles, out var expires);
                 AppendJwtCookie(jwtToken, expires);
 
                 var session = await BuildUserSessionAsync((int)user.UserID);
@@ -252,8 +295,7 @@ namespace SPARC_API.Controllers
             }
             catch (Exception ex)
             {
-                statusCode = 500;
-                error = ex.ToString();
+                statusCode = 500; error = ex.ToString();
                 resLog = JsonSerializer.Serialize(new { error = "Internal server error." });
                 return StatusCode(500, new { error = "Internal server error." });
             }
@@ -264,9 +306,7 @@ namespace SPARC_API.Controllers
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────────────
-        // 3) MFA Setup (QR) & Verify (enable flag) — kept as-is for parity
-        // ─────────────────────────────────────────────────────────────────────────────
+        // POST /api/auth/mfa/setup  (requires existing JWT)
         [Authorize]
         [HttpPost("mfa/setup")]
         public async Task<IActionResult> SetupMfa()
@@ -315,6 +355,7 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // POST /api/auth/mfa/verify  (requires existing JWT)
         [Authorize]
         [HttpPost("mfa/verify")]
         public async Task<IActionResult> VerifyMfa([FromBody] VerifyMfaDto dto)
@@ -358,9 +399,8 @@ namespace SPARC_API.Controllers
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────────────
-        // 4) Refresh / Refresh-Contexts / Logout — unchanged
-        // ─────────────────────────────────────────────────────────────────────────────
+        // POST /api/auth/refresh  (requires existing JWT)
+        // Rotates the JWT cookie (new expiry/jti) and returns fresh session data.
         [Authorize]
         [HttpPost("refresh")]
         public async Task<IActionResult> Refresh()
@@ -388,18 +428,9 @@ namespace SPARC_API.Controllers
                 if (exists == 0)
                     return Unauthorized(new { error = "User no longer active." });
 
-                var now = DateTime.UtcNow;
-                var expires = now.AddMinutes(_jwt.ExpireMinutes);
-                var claims = new List<Claim>
-                {
-                    new Claim(JwtRegisteredClaimNames.Sub, userId.ToString()),
-                    new Claim(ClaimTypes.Email, emailClaim),
-                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-                };
-                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
-                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-                var jwt = new JwtSecurityToken(_jwt.Issuer, _jwt.Audience, claims, now, expires, creds);
-                var token = new JwtSecurityTokenHandler().WriteToken(jwt);
+                // Re-embed current roles in the refreshed token
+                var roles = await GetUserRolesAsync(userId);
+                var token = BuildJwtWithRoles(userId, emailClaim, roles, out var expires);
 
                 AppendJwtCookie(token, expires);
 
@@ -421,6 +452,8 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // GET /api/auth/refresh-contexts  (requires existing JWT)
+        // Returns current session only (no token rotation).
         [Authorize]
         [HttpGet("refresh-contexts")]
         public async Task<IActionResult> RefreshContexts()
@@ -466,6 +499,7 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // POST /api/auth/logout
         [HttpPost("logout")]
         public async Task<IActionResult> Logout()
         {
@@ -503,9 +537,7 @@ namespace SPARC_API.Controllers
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────────────
-        // 5) Forgot/Reset password — unchanged (hash-through)
-        // ─────────────────────────────────────────────────────────────────────────────
+        // POST /api/auth/forgotpassword
         [HttpPost("forgotpassword")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto dto)
         {
@@ -555,6 +587,7 @@ namespace SPARC_API.Controllers
             }
         }
 
+        // POST /api/auth/resetpassword
         [HttpPost("resetpassword")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto dto)
         {

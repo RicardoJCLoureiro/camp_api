@@ -1,7 +1,9 @@
-﻿// DTOs/ChangePasswordDto.cs
-namespace SPARC_API.DTOs
+﻿namespace SPARC_API.DTOs
 {
-    // Passwords arrive already hashed (client-side SHA-256), per your current flow
+    /// <summary>
+    /// Change-my-password request payload.
+    /// Passwords arrive pre-hashed by the client (e.g., SHA-256).
+    /// </summary>
     public class ChangePasswordDto
     {
         public string CurrentPasswordHash { get; set; } = "";

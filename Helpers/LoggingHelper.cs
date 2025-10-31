@@ -9,7 +9,15 @@ namespace SPARC_API.Helpers
     {
         /// <summary>
         /// Inserts a row into LOG_ENDPOINT_CALLS and returns its ID.
-        /// Matches: LOG_ENDPOINT_CALLS(ID, NAME, PATH, CREATED_AT default GETDATE()).
+        /// Expected schema:
+        ///   LOG_ENDPOINT_CALLS(
+        ///     ID INT IDENTITY PK,
+        ///     NAME NVARCHAR(...),
+        ///     PATH NVARCHAR(...),
+        ///     CREATED_AT DATETIME DEFAULT GETDATE()
+        ///   )
+        /// Typical use:
+        ///   - Call at controller entry to capture an endpoint invocation.
         /// </summary>
         public static async Task<int> LogEndpointCallAsync(
             IDbConnection conn,
@@ -21,18 +29,35 @@ INSERT INTO LOG_ENDPOINT_CALLS (NAME, PATH)
 VALUES (@Name, @Path);
 SELECT CAST(SCOPE_IDENTITY() AS INT);";
 
+            // Returns the generated ID for correlation in subsequent logs.
             return await conn.ExecuteScalarAsync<int>(sql, new { Name = name, Path = path });
         }
 
         /// <summary>
-        /// Inserts into LOG_REQUESTS_RESPONSES. If errorDetails is not null/empty,
-        /// also inserts a row into ERROR_LOG using the same endpointId and the request payload.
+        /// Inserts a request/response log row and (optionally) an error row.
+        /// LOG_REQUESTS_RESPONSES schema (expected):
+        ///   ID INT IDENTITY PK,
+        ///   ENDPOINT_ID INT FK -> LOG_ENDPOINT_CALLS.ID,
+        ///   REQUEST_BODY NVARCHAR(MAX),
+        ///   RESPONSE_BODY NVARCHAR(MAX),
+        ///   STATUS INT,                 -- HTTP status code
+        ///   TIMESTAMP DEFAULT GETDATE(),
+        ///   RESPONSE_TIME INT NULL      -- ms (optional)
         ///
-        /// LOG_REQUESTS_RESPONSES columns:
-        ///   ID (IDENTITY), ENDPOINT_ID, REQUEST_BODY, RESPONSE_BODY, STATUS, TIMESTAMP default, RESPONSE_TIME
+        /// ERROR_LOG schema (expected):
+        ///   ID INT IDENTITY PK,
+        ///   LOG_ENDPOINT_ID INT,        -- ties back to endpoint call
+        ///   REFERENCE_ID NVARCHAR(...) NULL, -- external correlation id (optional)
+        ///   ERROR_MESSAGE NVARCHAR(...),
+        ///   ERROR_DETAILS NVARCHAR(MAX),
+        ///   OCCURRED_AT DEFAULT GETDATE(),
+        ///   DATA_PAYLOAD NVARCHAR(MAX)  -- request data for forensics
         ///
-        /// ERROR_LOG columns:
-        ///   ID, LOG_ENDPOINT_ID, REFERENCE_ID (nullable), ERROR_MESSAGE, ERROR_DETAILS, OCCURRED_AT default, DATA_PAYLOAD
+        /// Behavior:
+        ///   - Always inserts into LOG_REQUESTS_RESPONSES.
+        ///   - If errorDetails present → also inserts into ERROR_LOG.
+        /// Returns:
+        ///   - The LOG_REQUESTS_RESPONSES.ID created.
         /// </summary>
         public static async Task<int> LogRequestResponseAsync(
             IDbConnection conn,
@@ -43,7 +68,7 @@ SELECT CAST(SCOPE_IDENTITY() AS INT);";
             string? errorDetails,
             int? responseTime = null)
         {
-            // 1) Insert request/response log
+            // 1) Insert request/response row
             var insertReqResSql = @"
 INSERT INTO LOG_REQUESTS_RESPONSES
     (ENDPOINT_ID, REQUEST_BODY, RESPONSE_BODY, STATUS, RESPONSE_TIME)
@@ -63,10 +88,10 @@ SELECT CAST(SCOPE_IDENTITY() AS INT);";
                 }
             );
 
-            // 2) If there was an error, also log to ERROR_LOG
+            // 2) If error present, insert an ERROR_LOG row referencing the same endpointId.
             if (!string.IsNullOrWhiteSpace(errorDetails))
             {
-                // Derive a short message from the first line of the details
+                // Derive a short message (first non-empty line) from the details.
                 string errorMessage = errorDetails.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
 
                 var insertErrorSql = @"
@@ -79,8 +104,8 @@ VALUES
                     insertErrorSql,
                     new
                     {
-                        LogEndpointId = endpointId,
-                        ReferenceId = (string?)null, // you can set a correlation id or ticket id later
+                        LogEndpointId = endpointId,      // note: not reqResId; ties to endpoint call
+                        ReferenceId = (string?)null,     // optional correlation id placeholder
                         ErrorMessage = errorMessage,
                         ErrorDetails = errorDetails,
                         DataPayload = requestBody ?? string.Empty
@@ -92,8 +117,10 @@ VALUES
         }
 
         /// <summary>
-        /// Updates an existing LOG_REQUESTS_RESPONSES row.
-        /// NOTE: your table PK is ID (not DETAIL_ID).
+        /// Updates an existing request/response row after the response is known.
+        /// Primary key: LOG_REQUESTS_RESPONSES.ID (ensure the table uses 'ID' as PK).
+        /// Typical usage:
+        ///   - Log early with a placeholder, then update with final response/time.
         /// </summary>
         public static async Task UpdateLogRequestResponseAsync(
             IDbConnection conn,
@@ -122,8 +149,9 @@ UPDATE LOG_REQUESTS_RESPONSES
         }
 
         /// <summary>
-        /// Optional direct error logger if you ever want to log errors outside
-        /// the request/response flow.
+        /// Direct error logger for non-request contexts.
+        /// Returns the ERROR_LOG.ID generated.
+        /// Useful for background jobs, agents, or failures before a response exists.
         /// </summary>
         public static async Task<int> LogErrorAsync(
             IDbConnection conn,

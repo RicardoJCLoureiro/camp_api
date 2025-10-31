@@ -1,5 +1,7 @@
 ﻿namespace SPARC_API.Models
 {
+    // Request payload for paged user listing.
+    // Controllers/UsersController.List expects this shape.
     public class UserListRequestDto
     {
         /// <summary>

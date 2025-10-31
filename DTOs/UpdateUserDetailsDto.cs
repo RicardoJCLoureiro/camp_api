@@ -1,12 +1,13 @@
-﻿// DTOs/UpdateUserDetailsDto.cs
-using System;
-
-namespace SPARC_API.DTOs
+﻿namespace SPARC_API.DTOs
 {
-    // All fields optional — we will only update those provided (partial update)
+    /// <summary>
+    /// Partial update payload for user profile (self-service).
+    /// Any non-null field is applied; nulls are ignored.
+    /// Used in PATCH /api/users/me/details.
+    /// </summary>
     public class UpdateUserDetailsDto
     {
-        // USERS table (safe profile fields)
+        // USERS table
         public string? Name { get; set; }
         public string? Surname { get; set; }
         public string? LanguagePreference { get; set; }

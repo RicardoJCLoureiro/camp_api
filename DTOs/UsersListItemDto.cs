@@ -1,6 +1,9 @@
-﻿// DTOs/UsersListItemDto.cs
-namespace SPARC_API.DTOs
+﻿namespace SPARC_API.DTOs
 {
+    /// <summary>
+    /// Minimal projection used in paginated user lists.
+    /// Returned by UsersController.List (admin view).
+    /// </summary>
     public class UsersListItemDto
     {
         public int UserId { get; init; }
@@ -12,7 +15,7 @@ namespace SPARC_API.DTOs
         public bool IsActive { get; init; }
         public bool IsMfaEnabled { get; init; }
 
-        // Details (all optional)
+        // Optional detailed columns (from USER_DETAILS)
         public DateTime? BirthDate { get; init; }
         public string? Gender { get; init; }
         public string? IdentityNumber { get; init; }
@@ -24,13 +27,15 @@ namespace SPARC_API.DTOs
         public string? PostalCode { get; init; }
         public string? Country { get; init; }
         public string? PhoneNumber { get; init; }
+
+        // Emergency + medical info
         public string? EmergencyContactName { get; init; }
         public string? EmergencyContactPhone { get; init; }
         public string? EmergencyContactRelationship { get; init; }
         public string? Allergies { get; init; }
         public string? MedicalConditions { get; init; }
 
-        // Audit
+        // Audit info
         public string CreatedBy { get; init; } = "";
         public DateTime CreatedAt { get; init; }
         public string? UpdatedBy { get; init; }

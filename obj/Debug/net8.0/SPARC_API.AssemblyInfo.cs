@@ -15,7 +15,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SPARC_API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a7e70e49a9bee9c3180984debc7b0234fcbb4001")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93d4692c9ab2e81b5bc540ea2f34ced36a8cf979")]
 [assembly: System.Reflection.AssemblyProductAttribute("SPARC_API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SPARC_API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

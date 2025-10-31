@@ -18,10 +18,8 @@ using System.Threading.Tasks;
 namespace SPARC_API.Controllers
 {
     /// <summary>
-    /// Manages user opt-in to MFA:
-    /// - POST /api/mfa/setup: generates a TOTP secret and returns the otpauth URI + Base32 secret
-    /// - POST /api/mfa/confirm: verifies a TOTP code and enables MFA
-    /// All calls are logged (request/response) via LoggingHelper.
+    /// Standalone MFA management endpoints (setup + confirm).
+    /// Intended for authenticated users adding MFA after initial signup/login.
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
@@ -42,8 +40,8 @@ namespace SPARC_API.Controllers
         }
 
         /// <summary>
-        /// Step 1: Generate a new MFA secret for the authenticated user
-        /// and return the otpauth URI plus the Base32 secret.
+        /// Step 1: Generate Base32 secret and otpauth URI for the current user.
+        /// Stores the secret server-side; client uses it to configure Authenticator app.
         /// </summary>
         [Authorize]
         [HttpPost("setup")]
@@ -59,7 +57,7 @@ namespace SPARC_API.Controllers
 
             try
             {
-                // 1) Extract userId & email from token
+                // Pull user id/email from JWT.
                 var subClaim = User.FindFirstValue(ClaimTypes.NameIdentifier)
                                   ?? User.FindFirstValue(JwtRegisteredClaimNames.Sub);
                 var emailClaim = User.FindFirstValue(ClaimTypes.Email)
@@ -73,7 +71,7 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid token claims." });
                 }
 
-                // 2) Generate and store a new Base32 secret
+                // Generate random secret and persist against the user.
                 byte[] secretBytes = KeyGeneration.GenerateRandomKey(20);
                 string secret = Base32Encoding.ToString(secretBytes);
                 await _db.ExecuteAsync(
@@ -81,13 +79,12 @@ namespace SPARC_API.Controllers
                     new { Secret = secret, Id = userId }
                 );
 
-                // 3) Build the otpauth URI using configured issuer
-                //    (Keeps compatibility with most authenticator apps)
+                // Construct otpauth URI using configured issuer for compatibility.
                 string issuer = string.IsNullOrWhiteSpace(_jwt.Issuer) ? "SPARC_API" : _jwt.Issuer;
                 string uri = $"otpauth://totp/{Uri.EscapeDataString(issuer)}:{Uri.EscapeDataString(emailClaim)}"
                            + $"?secret={secret}&issuer={Uri.EscapeDataString(issuer)}&digits=6&period=30";
 
-                // 4) Return secret + URI (do NOT log the secret)
+                // Do not log the secret in resLog; only return to client.
                 resLog = JsonSerializer.Serialize(new { issued = true });
                 return Ok(new { secret, uri });
             }
@@ -114,7 +111,7 @@ namespace SPARC_API.Controllers
         }
 
         /// <summary>
-        /// Step 2: Confirm the TOTP code. If valid, enables MFA for the authenticated user.
+        /// Step 2: Confirm a TOTP code; if valid, enable MFA for this user.
         /// </summary>
         [Authorize]
         [HttpPost("confirm")]
@@ -123,7 +120,7 @@ namespace SPARC_API.Controllers
             var sw = Stopwatch.StartNew();
             int endpointLogId = await LoggingHelper
                 .LogEndpointCallAsync(_db, "MfaController.Confirm", HttpContext.Request.Path);
-            // redact the code in logs
+            // Redact incoming code in the logs.
             string reqLog = JsonSerializer.Serialize(new { Code = "REDACTED" });
             string resLog = "";
             int statusCode = 200;
@@ -131,7 +128,7 @@ namespace SPARC_API.Controllers
 
             try
             {
-                // 1) Extract userId
+                // Extract user id from JWT.
                 var subClaim = User.FindFirstValue(ClaimTypes.NameIdentifier)
                              ?? User.FindFirstValue(JwtRegisteredClaimNames.Sub);
                 if (string.IsNullOrEmpty(subClaim)
@@ -142,7 +139,7 @@ namespace SPARC_API.Controllers
                     return Unauthorized(new { error = "Invalid token claims." });
                 }
 
-                // 2) Retrieve stored secret
+                // Retrieve stored secret and validate the code.
                 string? secret = await _db.QuerySingleOrDefaultAsync<string?>(
                     "SELECT MFASecret FROM dbo.USERS WHERE USER_ID = @Id;",
                     new { Id = userId }
@@ -154,7 +151,6 @@ namespace SPARC_API.Controllers
                     return BadRequest(new { error = "MFA not initiated." });
                 }
 
-                // 3) Verify TOTP code
                 var totp = new Totp(Base32Encoding.ToBytes(secret));
                 if (!totp.VerifyTotp(code, out _, VerificationWindow.RfcSpecifiedNetworkDelay))
                 {
@@ -163,7 +159,7 @@ namespace SPARC_API.Controllers
                     return BadRequest(new { error = "Invalid MFA code." });
                 }
 
-                // 4) Enable MFA flag
+                // Flip the IsMfaEnabled flag.
                 await _db.ExecuteAsync(
                     "UPDATE dbo.USERS SET IsMfaEnabled = 1 WHERE USER_ID = @Id;",
                     new { Id = userId }

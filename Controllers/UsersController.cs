@@ -16,6 +16,8 @@ using SPARC_API.Models;  // UserListRequestDto
 
 namespace SPARC_API.Controllers
 {
+    // User management endpoints (list, self-details, self-update, change-password).
+    // Entire controller is JWT-protected.
     [ApiController]
     [Route("api/[controller]")]
     [Authorize]
@@ -28,7 +30,8 @@ namespace SPARC_API.Controllers
 
         // ──────────────────────────────────────────────────────────────
         // POST /api/users/list
-        // ──────────────────────────────────────────────────────────────
+        // Returns paginated user list.
+        // Superuser (id=1) sees all; others do not see superuser record.
         [HttpPost("list")]
         public async Task<IActionResult> List([FromBody] UserListRequestDto dto)
         {
@@ -42,6 +45,7 @@ namespace SPARC_API.Controllers
 
             try
             {
+                // Resolve caller id from JWT and detect superuser (id==1).
                 var sub = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                        ?? User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
                 if (!int.TryParse(sub, out var callerId))
@@ -53,8 +57,10 @@ namespace SPARC_API.Controllers
                 int pageSize = Math.Clamp(dto.PageSize, 1, MaxPageSize);
                 int offset = (page - 1) * pageSize;
 
+                // Filter hides superuser from non-super callers.
                 string where = isSuper ? "1=1" : "u.USER_ID <> 1";
 
+                // Two queries in one round-trip: total count + page slice via ROW_NUMBER().
                 string countSql = $@"
 SELECT COUNT(*) AS TotalCount
   FROM dbo.USERS u
@@ -150,7 +156,7 @@ SELECT *
 
         // ──────────────────────────────────────────────────────────────
         // GET /api/users/me/details
-        // ──────────────────────────────────────────────────────────────
+        // Return the *caller’s* combined USERS + USER_DETAILS record.
         [HttpGet("me/details")]
         public async Task<IActionResult> GetMyDetails()
         {
@@ -230,8 +236,8 @@ WHERE u.USER_ID = @UserId;";
         }
 
         // ──────────────────────────────────────────────────────────────
-        // PATCH /api/users/me/details  (partial update)
-        // ──────────────────────────────────────────────────────────────
+        // PATCH /api/users/me/details (partial update)
+        // Upserts USER_DETAILS row on first write, updates USERS/USER_DETAILS selectively.
         [HttpPatch("me/details")]
         public async Task<IActionResult> PatchMyDetails([FromBody] UpdateUserDetailsDto dto)
         {
@@ -250,16 +256,19 @@ WHERE u.USER_ID = @UserId;";
                 if (!int.TryParse(sub, out var userId))
                     return Unauthorized(new { error = "Invalid token claims." });
 
+                // Dynamically builds SET clauses only for fields provided in DTO.
                 var usersSet = new System.Collections.Generic.List<string>();
                 var detailsSet = new System.Collections.Generic.List<string>();
                 var p = new DynamicParameters();
                 p.Add("UserId", userId);
 
+                // USERS table surface
                 if (dto.Name != null) { usersSet.Add("NAME = @Name"); p.Add("Name", dto.Name); }
                 if (dto.Surname != null) { usersSet.Add("SURNAME = @Surname"); p.Add("Surname", dto.Surname); }
                 if (dto.LanguagePreference != null) { usersSet.Add("LANGUAGE_PREFERENCE = @Lang"); p.Add("Lang", dto.LanguagePreference); }
                 if (dto.ProfilePictureUrl != null) { usersSet.Add("PROFILE_PICTURE_URL = @Pic"); p.Add("Pic", dto.ProfilePictureUrl); }
 
+                // USER_DETAILS surface
                 if (dto.BirthDate.HasValue) { detailsSet.Add("BIRTH_DATE = @BirthDate"); p.Add("BirthDate", dto.BirthDate); }
                 if (dto.Gender != null) { detailsSet.Add("GENDER = @Gender"); p.Add("Gender", dto.Gender); }
                 if (dto.IdentityNumber != null) { detailsSet.Add("IDENTITY_NUMBER = @IdNumber"); p.Add("IdNumber", dto.IdentityNumber); }
@@ -284,6 +293,7 @@ WHERE u.USER_ID = @UserId;";
                     return BadRequest(new { error = "noChanges" });
                 }
 
+                // Ensure USER_DETAILS row exists before attempting update.
                 await _db.ExecuteAsync(@"
 IF NOT EXISTS (SELECT 1 FROM dbo.USER_DETAILS WHERE USER_ID = @UserId)
     INSERT INTO dbo.USER_DETAILS (USER_ID) VALUES (@UserId);", new { UserId = userId });
@@ -319,7 +329,7 @@ IF NOT EXISTS (SELECT 1 FROM dbo.USER_DETAILS WHERE USER_ID = @UserId)
 
         // ──────────────────────────────────────────────────────────────
         // POST /api/users/me/change-password
-        // ──────────────────────────────────────────────────────────────
+        // Compares current password hash with DB; if matches, persists new hash.
         [HttpPost("me/change-password")]
         public async Task<IActionResult> ChangeMyPassword([FromBody] ChangePasswordDto dto)
         {

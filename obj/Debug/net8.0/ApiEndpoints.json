@@ -8,24 +8,76 @@
     "Order": 0,
     "Parameters": [
       {
-        "Name": "page",
-        "Type": "System.Int32",
+        "Name": "UserId",
+        "Type": "System.Nullable\u00601[[System.Int32, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
         "IsRequired": false
       },
       {
-        "Name": "pageSize",
-        "Type": "System.Int32",
-        "IsRequired": false
-      },
-      {
-        "Name": "onlyUnread",
-        "Type": "System.Boolean",
-        "IsRequired": false
-      },
-      {
-        "Name": "severity",
+        "Name": "Status",
         "Type": "System.String",
         "IsRequired": false
+      },
+      {
+        "Name": "Severity",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "Search",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "OnlyUnread",
+        "Type": "System.Nullable\u00601[[System.Boolean, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      },
+      {
+        "Name": "OnlyRead",
+        "Type": "System.Nullable\u00601[[System.Boolean, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      },
+      {
+        "Name": "Page",
+        "Type": "System.Int32",
+        "IsRequired": false
+      },
+      {
+        "Name": "PageSize",
+        "Type": "System.Int32",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "SPARC_API.Controllers.AlertsController",
+    "Method": "GetById",
+    "RelativePath": "api/Alerts/{id}",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Int32",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "SPARC_API.Controllers.AlertsController",
+    "Method": "Archive",
+    "RelativePath": "api/Alerts/archive",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "SPARC_API.DTOs.AlertsMarkRequestDto",
+        "IsRequired": true
       }
     ],
     "ReturnTypes": []
@@ -37,20 +89,10 @@
     "HttpMethod": "POST",
     "IsController": true,
     "Order": 0,
-    "Parameters": [],
-    "ReturnTypes": []
-  },
-  {
-    "ContainingType": "SPARC_API.Controllers.AlertsController",
-    "Method": "CreateDemo",
-    "RelativePath": "api/Alerts/demo-create",
-    "HttpMethod": "POST",
-    "IsController": true,
-    "Order": 0,
     "Parameters": [
       {
         "Name": "dto",
-        "Type": "SPARC_API.Controllers.AlertsController\u002BCreateAlertDto",
+        "Type": "SPARC_API.DTOs.ArchiveAllDto",
         "IsRequired": true
       }
     ],
@@ -63,7 +105,45 @@
     "HttpMethod": "POST",
     "IsController": true,
     "Order": 0,
-    "Parameters": [],
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "SPARC_API.DTOs.ReadAllDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "SPARC_API.Controllers.AlertsController",
+    "Method": "MarkRead",
+    "RelativePath": "api/Alerts/mark-read",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "SPARC_API.DTOs.AlertsMarkRequestDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "SPARC_API.Controllers.AlertsController",
+    "Method": "MarkUnread",
+    "RelativePath": "api/Alerts/mark-unread",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "SPARC_API.DTOs.AlertsMarkRequestDto",
+        "IsRequired": true
+      }
+    ],
     "ReturnTypes": []
   },
   {
@@ -78,6 +158,22 @@
         "Name": "max",
         "Type": "System.Nullable\u00601[[System.Int32, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
         "IsRequired": false
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "SPARC_API.Controllers.AlertsController",
+    "Method": "Unarchive",
+    "RelativePath": "api/Alerts/unarchive",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "SPARC_API.DTOs.AlertsMarkRequestDto",
+        "IsRequired": true
       }
     ],
     "ReturnTypes": []

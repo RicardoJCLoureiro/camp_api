@@ -1,18 +1,18 @@
-﻿// DTOs/LoginResponseDto.cs
-using System;
+﻿using System;
 
 namespace SPARC_API.DTOs
 {
+    /// <summary>
+    /// Response after successful login/refresh.
+    /// Note: JWT is set in an HttpOnly cookie; Token property can be kept
+    /// for backward compatibility if the frontend still reads it.
+    /// </summary>
     public class LoginResponseDto
     {
-        // We no longer return the raw JWT (it's set in an HttpOnly cookie).
-        // Keep this property only if your frontend still reads it.
-        // Otherwise, you can safely delete it.
-        public string? Token { get; set; }
-
+        public string? Token { get; set; }  // cookie-first flow; optional
         public DateTime Expires { get; set; }
 
-        // Unified user payload (id, email, name, profile picture, roles)
+        // Unified user context: id, email, display name, avatar, roles, etc.
         public UserSession User { get; set; } = default!;
     }
 }
